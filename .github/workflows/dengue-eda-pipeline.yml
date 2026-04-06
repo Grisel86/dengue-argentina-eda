@@ -1,0 +1,199 @@
+name: Dengue EDA Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  lint-and-validate:
+    name: Lint & Validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install flake8 nbformat
+
+      - name: Lint Python source code
+        run: |
+          flake8 src/ --max-line-length=120 --ignore=E501,W503,E303
+
+      - name: Validate notebook structure
+        run: |
+          python -c "
+          import nbformat
+          import sys
+          from pathlib import Path
+
+          notebooks = sorted(Path('notebooks').glob('*.ipynb'))
+          if not notebooks:
+              print('No notebooks found in notebooks/')
+              sys.exit(1)
+
+          errors = []
+          for nb_path in notebooks:
+              try:
+                  with open(nb_path, 'r', encoding='utf-8') as f:
+                      nb = nbformat.read(f, as_version=4)
+                  print(f'  {nb_path.name}: {len(nb.cells)} cells')
+              except Exception as e:
+                  errors.append(f'{nb_path.name}: {e}')
+
+          if errors:
+              print('Validation errors:')
+              for err in errors:
+                  print(f'  {err}')
+              sys.exit(1)
+
+          print(f'All {len(notebooks)} notebooks validated successfully.')
+          "
+
+      - name: Verify project structure
+        run: |
+          python -c "
+          from pathlib import Path
+          import sys
+
+          required = [
+              'README.md',
+              'requirements.txt',
+              'LICENSE',
+              '.gitignore',
+              'src/utils.py',
+              'notebooks/01_carga_y_limpieza.ipynb',
+              'notebooks/02_eda_descriptivo.ipynb',
+              'notebooks/03_visualizaciones.ipynb',
+          ]
+
+          missing = [f for f in required if not Path(f).exists()]
+
+          if missing:
+              print('Missing required files:')
+              for f in missing:
+                  print(f'  {f}')
+              sys.exit(1)
+
+          print('All required files present.')
+          "
+
+  run-notebooks:
+    name: Execute Notebooks
+    runs-on: ubuntu-latest
+    needs: lint-and-validate
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install nbconvert ipykernel
+
+      - name: Check for raw data
+        id: check_data
+        run: |
+          if ls data/raw/*.csv 1>/dev/null 2>&1; then
+            echo "data_exists=true" >> $GITHUB_OUTPUT
+            echo "Raw data files found:"
+            ls -lh data/raw/*.csv
+          else
+            echo "data_exists=false" >> $GITHUB_OUTPUT
+            echo "No raw data files found — skipping notebook execution."
+          fi
+
+      - name: Execute Notebook 01 - Data Loading & Cleaning
+        if: steps.check_data.outputs.data_exists == 'true'
+        run: |
+          cd notebooks
+          jupyter nbconvert --to notebook --execute \
+            --ExecutePreprocessor.timeout=300 \
+            --output 01_carga_y_limpieza_executed.ipynb \
+            01_carga_y_limpieza.ipynb
+
+      - name: Execute Notebook 02 - EDA
+        if: steps.check_data.outputs.data_exists == 'true'
+        run: |
+          cd notebooks
+          jupyter nbconvert --to notebook --execute \
+            --ExecutePreprocessor.timeout=300 \
+            --output 02_eda_descriptivo_executed.ipynb \
+            02_eda_descriptivo.ipynb
+
+      - name: Execute Notebook 03 - Visualizations
+        if: steps.check_data.outputs.data_exists == 'true'
+        run: |
+          cd notebooks
+          jupyter nbconvert --to notebook --execute \
+            --ExecutePreprocessor.timeout=300 \
+            --output 03_visualizaciones_executed.ipynb \
+            03_visualizaciones.ipynb
+
+      - name: Verify outputs generated
+        if: steps.check_data.outputs.data_exists == 'true'
+        run: |
+          python -c "
+          from pathlib import Path
+          import sys
+
+          figures = list(Path('outputs/figures').glob('*.png'))
+          processed = list(Path('data/processed').glob('*.csv'))
+
+          print(f'Figures generated: {len(figures)}')
+          for f in figures:
+              print(f'  {f.name}')
+
+          print(f'Processed files: {len(processed)}')
+          for f in processed:
+              print(f'  {f.name}')
+
+          if not processed:
+              print('ERROR: No processed CSV generated.')
+              sys.exit(1)
+
+          print('Pipeline completed successfully.')
+          "
+
+      - name: Upload figures as artifacts
+        if: steps.check_data.outputs.data_exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eda-figures
+          path: outputs/figures/
+          retention-days: 30
