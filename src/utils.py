@@ -186,9 +186,11 @@ def plot_evolucion_temporal(df: pd.DataFrame, col_fecha: str, col_casos: str,
     plt.show()
 
 
-def plot_casos_por_jurisdiccion(df: pd.DataFrame, col_jurisdiccion: str,
-                                 col_casos: str, top_n: int = 10,
-                                 guardar: bool = False):
+def plot_casos_por_jurisdiccion(
+    df: pd.DataFrame, col_jurisdiccion: str,
+    col_casos: str, top_n: int = 10,
+    guardar: bool = False,
+):
     """
     Barplot horizontal de casos por jurisdicción (top N).
 
